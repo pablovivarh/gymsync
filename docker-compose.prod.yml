@@ -1,0 +1,87 @@
+# docker-compose.prod.yml — Entorno de PRODUCCIÓN
+#
+# Diferencias respecto a desarrollo:
+# - Backend compilado (tsc) sin hot reload
+# - Frontend como build estático servido por Nginx
+# - PostgreSQL con puerto NO expuesto (solo accesible en red interna Docker)
+# - Un solo punto de entrada: Nginx en puerto 443
+#
+# Uso: docker compose -f docker-compose.prod.yml up --build -d
+
+name: gymsync-prod
+
+services:
+
+  # ── Base de datos PostgreSQL ──────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: gymsync-db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    # Puerto NO expuesto en producción — solo accesible desde la red interna Docker
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - gymsync-internal
+
+  # ── API Backend ───────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: docker/backend.dockerfile
+      target: production
+    container_name: gymsync-api
+    restart: always
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-900000}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-5}
+    # Puerto NO expuesto directamente — solo accesible desde Nginx
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - gymsync-internal
+
+  # ── Frontend + Reverse Proxy (Nginx) ─────────────────────────────────────
+  nginx:
+    build:
+      context: .
+      dockerfile: docker/frontend.dockerfile
+    container_name: gymsync-nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Certificados TLS — generados con certbot antes del primer deploy
+      - ./docker/nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      - api
+    networks:
+      - gymsync-internal
+
+volumes:
+  postgres_data:
+    name: gymsync_postgres_data
+
+networks:
+  gymsync-internal:
+    name: gymsync-internal
+    driver: bridge
+    # Red interna — los servicios no son accesibles desde fuera del host
+    internal: false # Nginx necesita acceso a internet para renovar certificados

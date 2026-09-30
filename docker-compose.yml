@@ -1,0 +1,83 @@
+# docker-compose.yml — Entorno de DESARROLLO
+#
+# Diferencias respecto a producción:
+# - Backend con hot reload (tsx watch + bind mount del código fuente)
+# - Frontend con Vite dev server (no Nginx para el frontend)
+# - PostgreSQL con puerto expuesto para acceso con clientes como DBeaver
+# - Variables de entorno cargadas desde .env
+#
+# Uso: docker compose up --build
+# O con scripts del monorepo: npm run docker:dev
+
+name: gymsync-dev
+
+services:
+
+  # ── Base de datos PostgreSQL ──────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: gymsync-db-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gymsync}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gymsync_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-gymsync_db}
+    ports:
+      # Expuesto solo en desarrollo para acceso con clientes SQL
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gymsync} -d ${POSTGRES_DB:-gymsync_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - gymsync-network
+
+  # ── API Backend (Node.js + Express) ──────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: docker/backend.dockerfile
+      target: development
+    container_name: gymsync-api-dev
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-gymsync}:${POSTGRES_PASSWORD:-gymsync_dev_password}@db:5432/${POSTGRES_DB:-gymsync_db}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
+      CORS_ORIGIN: http://localhost:5173
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-900000}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-5}
+    ports:
+      - "3000:3000"
+    volumes:
+      # Bind mounts del código fuente y del esquema Prisma para hot reload real
+      - ./backend/src:/app/backend/src
+      - ./backend/prisma:/app/backend/prisma
+      - ./shared:/app/shared
+      # Evitar que el bind mount sobreescriba los node_modules del contenedor
+      - /app/backend/node_modules
+    command: sh -lc "npx prisma generate && npx tsx watch src/server.ts"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - gymsync-network
+
+  # NOTA: el frontend en desarrollo se ejecuta localmente con `npm run dev:frontend`
+  # No se dockeriza en desarrollo para aprovechar el HMR de Vite.
+  # En producción (docker-compose.prod.yml) sí se dockeriza como build estático.
+
+volumes:
+  postgres_data_dev:
+    name: gymsync_postgres_data_dev
+
+networks:
+  gymsync-network:
+    name: gymsync-network
+    driver: bridge

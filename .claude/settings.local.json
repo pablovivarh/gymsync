@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(npm audit *)",
+      "Bash(npm run *)",
+      "Bash(Get-ChildItem \"c:\\\\Users\\\\pablo\\\\Desktop\\\\gymsync-v1\" -Name \".env*\" -Force)",
+      "Bash(Get-ChildItem \"c:\\\\Users\\\\pablo\\\\Desktop\\\\gymsync-v1\\\\backend\" -Name \".env*\" -Force)"
+    ]
+  }
+}

@@ -1,0 +1,241 @@
+// backend/prisma/schema.prisma
+//
+// Fuente de verdad del modelo de datos de GymSync V1.
+// Basado en el Análisis Funcional (secciones 6, 7 y 8) y el
+// documento de arquitectura tecnológica.
+//
+// Para aplicar cambios:
+//   npx prisma migrate dev --name <nombre_descriptivo>
+//
+// Para regenerar el cliente TypeScript:
+//   npx prisma generate
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Enums ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  ADMIN
+  RECEPCION
+  ENTRENADOR
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  DELETED
+}
+
+enum MemberStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum Modalidad {
+  MONTHLY    // 30 días
+  QUARTERLY  // 90 días
+  ANNUAL     // 365 días
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+enum MembershipStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  TRANSFER
+  BANK
+  OTHER
+}
+
+enum PaymentStatus {
+  PAID
+  PENDING
+  REFUNDED
+  CANCELLED
+}
+
+// ── Entidad: User ─────────────────────────────────────────────────────────────
+//
+// UUID como PK (más seguro que INT autoincramental — doc arquitectura sección 5.3)
+// soft delete mediante campo deleted_at (RF-13)
+// email único a nivel de base de datos
+
+model User {
+  id String @id @default(uuid()) @db.Uuid
+  email            String      @unique @db.VarChar(255)
+  password_hash    String      @db.VarChar(255)
+  nombre_completo  String      @db.VarChar(120)
+  telefono         String?     @db.VarChar(20)
+  fecha_nacimiento DateTime?   @db.Date
+  direccion_postal String?     @db.Text
+  role             Role        @default(RECEPCION)
+  status           UserStatus  @default(ACTIVE)
+
+  // Soft delete — preserva historial (RF-13, doc funcional sección 6.3.4)
+  deleted_at       DateTime?
+
+  // Audit timestamps — trazabilidad automática (RNF-20)
+  created_at       DateTime    @default(now())
+  updated_at       DateTime    @updatedAt
+
+  // Relaciones
+  subscriptions         Subscription[]    @relation("UserSubscriptions")
+  subscriptions_created Subscription[]    @relation("CreatedByUser")
+  members_created       Member[]          @relation("CreatedByMember")
+  membership_plans_created MembershipPlan[] @relation("CreatedByMembershipPlan")
+  memberships_created   Membership[]      @relation("CreatedByMembership")
+  payments_created      Payment[]         @relation("CreatedByPayment")
+
+  @@map("users")
+}
+
+model Member {
+  id String @id @default(uuid()) @db.Uuid
+  full_name     String       @db.VarChar(120)
+  phone         String       @db.VarChar(20)
+  email         String?      @unique @db.VarChar(255)
+  document_id   String?      @unique @db.VarChar(50)
+  birth_date    DateTime?    @db.Date
+  address       String?      @db.Text
+  notes         String?      @db.Text
+  status        MemberStatus @default(ACTIVE)
+  joined_at     DateTime     @default(now()) @db.Date
+  created_by    String       @db.Uuid
+  created_at    DateTime     @default(now())
+  updated_at    DateTime     @updatedAt
+  deleted_at    DateTime?
+
+  creator User @relation("CreatedByMember", fields: [created_by], references: [id], onDelete: Restrict)
+  memberships Membership[] @relation("MemberMemberships")
+
+  @@index([phone])
+  @@index([status])
+  @@index([joined_at])
+  @@index([full_name])
+
+  @@map("members")
+}
+
+model MembershipPlan {
+  id String @id @default(uuid()) @db.Uuid
+  name String @db.VarChar(120)
+  description String? @db.Text
+  duration_days Int
+  price Int
+  active Boolean @default(true)
+  created_by String @db.Uuid
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+  deleted_at DateTime?
+
+  creator User @relation("CreatedByMembershipPlan", fields: [created_by], references: [id], onDelete: Restrict)
+  memberships Membership[] @relation("MembershipPlanMemberships")
+
+  @@index([active])
+  @@index([price])
+  @@map("membership_plans")
+}
+
+model Membership {
+  id String @id @default(uuid()) @db.Uuid
+  member_id String @db.Uuid
+  plan_id String @db.Uuid
+  start_date DateTime @db.Date
+  end_date DateTime @db.Date
+  status MembershipStatus @default(ACTIVE)
+  price Int
+  created_by String @db.Uuid
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+  deleted_at DateTime?
+
+  member Member @relation("MemberMemberships", fields: [member_id], references: [id], onDelete: Restrict)
+  plan MembershipPlan @relation("MembershipPlanMemberships", fields: [plan_id], references: [id], onDelete: Restrict)
+  creator User @relation("CreatedByMembership", fields: [created_by], references: [id], onDelete: Restrict)
+  payments Payment[] @relation("MembershipPayments")
+
+  @@index([member_id])
+  @@index([status])
+  @@index([end_date])
+  @@map("memberships")
+}
+
+model Payment {
+  id String @id @default(uuid()) @db.Uuid
+  membership_id String @db.Uuid
+  amount Int
+  payment_date DateTime @db.Date
+  method PaymentMethod @default(CASH)
+  status PaymentStatus @default(PAID)
+  reference String? @db.VarChar(120)
+  notes String? @db.Text
+  created_by String @db.Uuid
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+  deleted_at DateTime?
+
+  membership Membership @relation("MembershipPayments", fields: [membership_id], references: [id], onDelete: Restrict)
+  creator User @relation("CreatedByPayment", fields: [created_by], references: [id], onDelete: Restrict)
+
+  @@index([membership_id])
+  @@index([status])
+  @@index([payment_date])
+  @@map("payments")
+}
+
+// ── Entidad: Subscription ─────────────────────────────────────────────────────
+//
+// La restricción de unicidad de suscripción activa se implementa mediante
+// un índice parcial (@@index no soporta filtros en Prisma Schema Language).
+// Se crea como SQL raw en la migración inicial:
+//
+//   CREATE UNIQUE INDEX "subscriptions_user_id_active_unique"
+//   ON "subscriptions" ("user_id")
+//   WHERE "status" = 'ACTIVE';
+//
+// Esta restricción garantiza RF-15 a nivel de base de datos, no solo en aplicación.
+// (PostgreSQL únicamente — razón determinante para elegir PG sobre MySQL, doc arq. sección 5.1)
+
+model Subscription {
+  id String @id @default(uuid()) @db.Uuid
+  user_id     String             @db.Uuid
+  modalidad   Modalidad
+  fecha_inicio DateTime          @db.Date
+  fecha_fin    DateTime          @db.Date
+  status      SubscriptionStatus @default(ACTIVE)
+
+  // Auditoría: quién creó la suscripción (RF-17)
+  created_by  String             @db.Uuid
+
+  // Audit timestamps
+  created_at  DateTime           @default(now())
+  updated_at  DateTime           @updatedAt
+
+  // Relaciones
+  user        User               @relation("UserSubscriptions", fields: [user_id], references: [id], onDelete: Restrict)
+  creator     User               @relation("CreatedByUser",     fields: [created_by], references: [id], onDelete: Restrict)
+
+  // Índices para rendimiento (doc arquitectura tabla 8.3)
+  @@index([user_id])
+  @@index([status])
+  @@index([fecha_fin])
+
+  @@map("subscriptions")
+}
