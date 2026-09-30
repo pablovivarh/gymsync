@@ -41,3 +41,10 @@ redis-data/
 # Coverage
 coverage/
 .nyc_output/
+node_modules/
+.env
+.env.*
+!.env.example
+dist/
+build/
+*.tar
